@@ -204,7 +204,7 @@ class LoggerAppenderKafka extends LoggerAppender
 	 */
 	public function setPort($port) {
 		if($port > 0 and $port < 65535) {
-		    $this->setPositiveInteger('port', $port);
+		    $this->_port = $port;
         }
 	}
 
