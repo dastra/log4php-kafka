@@ -1,0 +1,15 @@
+{
+  "name": "dastra/log4php-kafka",
+  "description": "Kafka Appender for Log4Php",
+  "keywords": ["log", "logging", "php", "kafka"],
+  "homepage": "https://github.com/dastra/log4php-kafka/",
+  "type": "library",
+  "license": "Apache-2.0",
+  "autoload": {
+    "classmap": ["src/main/php/"]
+  },
+  "require": {
+    "apache/log4php": "2.3.0",
+    "php": ">=5.2.7"
+  }
+}
