@@ -1,10 +1,20 @@
 <?php
+declare(strict_types = 1);
+namespace amoma\log4phpKafka\appenders;
+
+use amoma\log4phpKafka\exceptions\KafkaProducerException;
+use amoma\log4phpKafka\exceptions\KafkaTimedOutException;
+use amoma\log4phpKafka\exceptions\LoggerAppenderKafkaException;
+use RdKafka\{Producer, ProducerTopic, Conf, TopicConf};
+use LoggerAppender;
+use LoggerLoggingEvent;
+use Throwable;
 
 /**
  * Serialize events and send them to Kafka
  *
  * This appender can be configured by changing the following attributes:
- * 
+ *
  * - remoteHost         - Sets the Kafka Broker IP address - defaults to localhost
  * - port               - Sets the port of the Kafka Broker.
  * - topic              - Sets the Kafka topic to publish messages to
@@ -14,32 +24,33 @@
  * {@link $partition}.
  *
  * An example:
- * 
+ *
  * {@example ../../examples/php/appender_kafka.php 19}
- * 
+ *
  * {@example ../../examples/resources/appender_kafka.properties 18}
- * 
+ *
  * @package log4php
  * @subpackage appenders
- */ 
+ */
 class LoggerAppenderKafka extends LoggerAppender
 {
-	/**
-	 * Target host. On how to define remote hostaname see
-	 * {@link PHP_MANUAL#fsockopen}
-	 * @var string
-	 */
-	private $_remoteHost = 'localhost';
-
-	/**
-	 * @var integer the port the Kafka broker is running on
-	 */
-	private $_port = 9092;
+    /**
+     * The topic you wish to publish messages on
+     * @var string
+     */
+    protected $_topic = 'default';
 
     /**
-     * @var string the topic you wish to publish messages on
+     * Kafka server version
+     * @var string
      */
-    private $_topic = null;
+    protected $_kafkaVersion = '0.8.2.2';
+
+    /**
+     * List of brokers (ex: 192.168.33.31:9092,192.168.33.31)
+     * @var string
+     */
+    protected $_brokers = "localhost:9092";
 
     /**
      * Kafka is a partitioned system so not all servers have the complete data set.
@@ -47,171 +58,129 @@ class LoggerAppenderKafka extends LoggerAppender
      * and each partition is replicated with some replication factor, N.
      * Topic partitions themselves are just ordered "commit logs" numbered 0, 1, ..., P.
      *
-     * At the moment, we have no way of passing in the partition number.  So, we will just
-     * set it to a constant.
-     *
-     * @var integer
+     * @var int
      */
-    private $_partition = 0xFFFFFFFF;
-
-	/**
-	 * @var mixed socket connection resource
-	 * @access private
-	 */
-	private $_sp = false;
+    protected $_partition = RD_KAFKA_PARTITION_UA;
 
     /**
-     * Kafka Batching
-     *
-     * Our apis encourage batching small things together for efficiency. We have found this is a very significant performance win.
-     * Both our API to send messages and our API to fetch messages always work with a sequence of messages not a
-     * single message to encourage this. A clever client can make use of this and support an "asynchronous" mode
-     * in which it batches together messages sent individually and sends them in larger clumps.
-     * We go even further with this and allow the batching across multiple topics and partitions,
-     * so a produce request may contain data to append to many partitions and a fetch request may pull data from many partitions all at once.
+     * Connection resource
+     * @var ProducerTopic
      */
-    const KAFKA_PRODUCE_REQUEST_ID = 0;
+    protected $_producerTopic = null;
 
-    /**
-	 * 1 byte "magic" identifier to allow format changes
-	 *
-	 * @var integer
-	 */
-	const KAFKA_CURRENT_MAGIC_VALUE = 0;
-
-	
-	/** @var bool indicates if this appender should run in dry mode
-     * This enables us to test most of the functionality without using the actual Kafka calls
-     */
-	private $_dryRun = false;
-	
-	/**
-	 * create a socket connection using defined parameters
-     * // Done
-	 */
-	public function activateOptions() {
-		if(!$this->_dryRun)
-        {
-            $errstr = '';
-            $errno = null;
-            if (!is_resource($this->_sp)) {
-		    	$this->_sp = stream_socket_client('tcp://' . $this->_remoteHost . ':' . $this->_port, $errno, $errstr);
-		    }
-		    if (!is_resource($this->_sp)) {
-			    throw new LoggerException('Cannot connect to Kafka: ' .$this->getRemoteHost().":".$this->getPort().": $errstr ($errno)");
-		    }
-		}
-
-        $this->closed = false;
-	}
-
-    // Done
-	public function close() {
-		if($this->closed != true) {
-            if (!$this->_dryRun and is_resource($this->_sp)) {
-                fclose($this->_sp);
-            }
-			$this->closed = true;
-		}
-	}
-
-	public function reset() {
-		$this->close();
-	}
-
-
-	public function append(LoggerLoggingEvent $event)
+    public function activateOptions()
     {
-		if(( is_resource($this->_sp) || $this->_dryRun) && $this->layout !== null)
-        {
-            $buffer = $this->layout->format($event);
-            $encodedBuffer = self::encode_message($buffer);
-            $messageBody = pack('N', strlen($encodedBuffer)) . $encodedBuffer;
-
-            // encode messages as <LEN: int><MESSAGE_BYTES>
-            // create the request as <REQUEST_SIZE: int> <REQUEST_ID: short> <TOPIC: bytes> <PARTITION: int> <BUFFER_SIZE: int> <BUFFER: bytes>
-            $data = pack('n', self::KAFKA_PRODUCE_REQUEST_ID) .
-                pack('n', strlen($this->_topic)) . $this->_topic .
-                pack('N', $this->_partition) .
-                pack('N', strlen($messageBody)) . $messageBody;
-
-		    $toSend = pack('N', strlen($data)) . $data;
-
-            if(!$this->_dryRun)
-            {
-                fwrite($this->_sp, $toSend);
-            } else {
-                echo "DRY MODE OF SOCKET APPENDER: ".$toSend;
-            }
-		}
-	}
-
-    private static function encode_message($msg)
-    {
-		// <MAGIC_BYTE: 1 byte> <CRC32: 4 bytes bigendian> <PAYLOAD: N bytes>
-		return pack('CN', self::KAFKA_CURRENT_MAGIC_VALUE, crc32($msg))
-			 . $msg;
-	}
-
-    public function __destruct() {
-       $this->close();
-   	}
-
-    /**
-	 * When serializing, close the socket and save the connection parameters
-	 * so it can connect again
-	 *
-	 * @return array Properties to save
-	 */
-	public function __sleep() {
-		$this->close();
-		return array('request_key', 'host', 'port');
-	}
-
-	/**
-	 * Restore parameters on unserialize
-	 *
-	 * @return void
-	 */
-	public function __wakeup() {
-
-	}
-
-    public function setDry($dry) {
-		$this->_dryRun = $dry;
-	}
-
-    public function getRemoteHost() {
-		return $this->_remoteHost;
-	}
-
-    /**
-	 * @param string
-	 */
-	public function setRemoteHost($hostname) {
-		$this->_remoteHost = $hostname;
-	}
-
-    /**
-	 * @return integer
-	 */
-	public function getPort() {
-		return $this->_port;
-	}
-
-    /**
-	 * @param integer $port Sets the target port
-	 */
-	public function setPort($port) {
-		if($port > 0 and $port < 65535) {
-		    $this->_port = $port;
+        if (!$this->_producerTopic instanceof ProducerTopic) {
+            $this->createProducerTopic();
         }
-	}
+    }
+
+    public function append(LoggerLoggingEvent $event)
+    {
+        if (!$this->_producerTopic instanceof ProducerTopic) {
+            $this->createProducerTopic();
+        }
+
+        try {
+            $this->_producerTopic->produce($this->_partition, 0, $event->getMessage());
+        } catch (Throwable $exception) {
+            throw new LoggerAppenderKafkaException("Error: " . $exception->getMessage());
+        }
+    }
+
+    private function createProducerTopic()
+    {
+        $conf = new Conf();
+        $conf->setErrorCb(function ($kafka, $err, $reason) {
+            $this->_callbackWrite($kafka, $err, $reason);
+        });
+        $conf->set('broker.version.fallback', $this->_kafkaVersion);
+        $conf->set('queue.buffering.max.ms', '1000');
+
+        $confTopic = new TopicConf();
+
+        $topicProducer = new Producer($conf);
+        $topicProducer->addBrokers($this->_brokers);
+
+        $this->_producerTopic = $topicProducer->newTopic($this->_topic, $confTopic);
+    }
+
+    /**
+     * @param $kafka
+     * @param $err
+     * @param $reason
+     * @throws KafkaProducerException
+     * @throws KafkaTimedOutException
+     */
+    private function _callbackWrite($kafka, $err, $reason)
+    {
+        $error = rd_kafka_err2str($err);
+
+        if (strpos($error, 'Message timed out') !== false || strpos($error, 'Connection timed out') !== false) {
+            throw new KafkaTimedOutException(sprintf('Kafka Producer Exception: %1$s', $error));
+        } else {
+            if (strpos($error, 'Broker transport failure') !== false) {
+                throw new KafkaProducerException(sprintf('Kafka Producer Exception: %1$s', $reason));
+            }
+        }
+
+        throw new KafkaProducerException(sprintf('Kafka Producer Exception: %1$s', $reason));
+    }
+
+    public function close()
+    {
+        $this->_producerTopic = null;
+    }
+
+    public function reset()
+    {
+        $this->close();
+    }
+
+    public function __destruct()
+    {
+        $this->close();
+    }
+
+    /**
+     * When serializing, close the connection and save the parameters
+     * so it can connect again
+     *
+     * @return array Properties to save
+     */
+    public function __sleep(): array
+    {
+        $this->close();
+
+        $data = [
+            'topic' => $this->_topic,
+            'kafkaVersion' => $this->_kafkaVersion,
+            'brokers' => $this->_brokers,
+            'partition' => $this->_partition
+        ];
+
+        return $data;
+    }
+
+    /**
+     * Restore parameters on unserialize
+     * @param array $data
+     * @return void
+     */
+    public function __wakeup(array $data)
+    {
+        $this->_topic = $data['topic'];
+        $this->_kafkaVersion = $data['kafkaVersion'];
+        $this->_brokers = $data['brokers'];
+        $this->_partition = $data['partition'];
+
+        $this->createProducerTopic();
+    }
 
     /**
      * @param string $topic
      */
-    public function setTopic($topic)
+    public function setTopic(string $topic)
     {
         $this->_topic = $topic;
     }
@@ -219,15 +188,47 @@ class LoggerAppenderKafka extends LoggerAppender
     /**
      * @return string
      */
-    public function getTopic()
+    public function getTopic(): string
     {
         return $this->_topic;
     }
 
     /**
+     * @param string $kafkaVersion
+     */
+    public function setKafkaVersion(string $kafkaVersion)
+    {
+        $this->_kafkaVersion = $kafkaVersion;
+    }
+
+    /**
+     * @return string
+     */
+    public function getKafkaVersion(): string
+    {
+        return $this->_kafkaVersion;
+    }
+
+    /**
+     * @param array $brokers
+     */
+    public function setBrokers(array $brokers)
+    {
+        $this->_brokers = implode(',', $brokers);
+    }
+
+    /**
+     * @return array
+     */
+    public function getBrokers(): array
+    {
+        return explode(',', $this->_brokers);
+    }
+
+    /**
      * @param int $partition
      */
-    public function setPartition($partition)
+    public function setPartition(int $partition)
     {
         $this->_partition = $partition;
     }
@@ -235,7 +236,7 @@ class LoggerAppenderKafka extends LoggerAppender
     /**
      * @return int
      */
-    public function getPartition()
+    public function getPartition(): int
     {
         return $this->_partition;
     }

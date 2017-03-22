@@ -6,10 +6,13 @@
   "type": "library",
   "license": "Apache-2.0",
   "autoload": {
-    "classmap": ["src/main/php/"]
+    "psr-4": {
+      "amoma\\log4phpKafka\\": "src/main/php/"
+    }
   },
   "require": {
+    "roave/security-advisories": "dev-master",
     "apache/log4php": "2.3.0",
-    "php": ">=5.2.7"
+    "php": "~7.0"
   }
 }
