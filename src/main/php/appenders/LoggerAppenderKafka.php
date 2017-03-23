@@ -96,8 +96,10 @@ class LoggerAppenderKafka extends LoggerAppender
         });
         $conf->set('broker.version.fallback', $this->_kafkaVersion);
         $conf->set('queue.buffering.max.ms', '1000');
+        $conf->set('socket.timeout.ms', '1000');
 
         $confTopic = new TopicConf();
+        $confTopic->set("message.timeout.ms", "1000");
 
         $topicProducer = new Producer($conf);
         $topicProducer->addBrokers($this->_brokers);
